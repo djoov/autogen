@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Docker
+coding_output/
+memos_data/
+dist_compiled/
+
+# IDE
+.idea/
+.vscode/
+
+# System
+Thumbs.db
+Desktop.ini

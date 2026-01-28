@@ -1,0 +1,3 @@
+
+Keunggulannya adalah SilverBullet bersifat local-first dan menyimpan data dalam plain Markdown. Ini akan memudahkan pipeline RAG (Retrieval-Augmented Generation) kita karena AI bisa langsung melakukan indexing pada file fisik tanpa melalui layer database, dan fitur Objects-nya memungkinkan kita menyusun data terstruktur yang bisa dipahami AI dengan lebih presisi.
+Keunggulannya adalah SilverBullet bersifat local-first dan menyimpan data dalam plain Markdown. Ini akan memudahkan pipeline RAG (Retrieval-Augmented Generation) kita karena AI bisa langsung melakukan indexing pada file fisik tanpa melalui layer database, dan fitur Objects-nya memungkinkan kita menyusun data terstruktur yang bisa dipahami AI dengan lebih presisi.
