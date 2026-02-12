@@ -19,6 +19,19 @@ services:
       - ./notes:/space
     restart: always
 
+  # 3. Neo4j Knowledge Graph
+  neo4j:
+    image: neo4j:5-community
+    container_name: local-graph
+    ports:
+      - "7474:7474" # Browser UI
+      - "7687:7687" # Bolt protocol
+    environment:
+      - NEO4J_AUTH=neo4j/password123
+    volumes:
+      - ./neo4j_data:/data
+    restart: always
+
   # 2. Agent AutoGen
   agent:
     image: ag-agent:latest

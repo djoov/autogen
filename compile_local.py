@@ -42,7 +42,8 @@ def compile_project():
         "auto_hf.py",
         "bot_silverbullet.py",
         "bot_rag.py",
-        "bot_super.py"
+        "bot_super.py",
+        "neo4j_graph.py"
     ]
     
     import py_compile

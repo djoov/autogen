@@ -5,9 +5,10 @@ __pycache__/
 venv/
 .env
 
-# Docker
+# Docker/Data
 coding_output/
 memos_data/
+neo4j_data/
 dist_compiled/
 
 # IDE

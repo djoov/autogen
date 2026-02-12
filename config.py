@@ -45,6 +45,11 @@ SILVERBULLET_URL = os.getenv("SILVERBULLET_URL", "http://localhost:3000")
 MEMOS_URL = os.getenv("MEMOS_BASE_URL", "http://localhost:5230")
 MEMOS_TOKEN = os.getenv("MEMOS_TOKEN", "")
 
+# Neo4j Knowledge Graph
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password123")
+
 # ==============================================================================
 # BROWSER AUTOMATION (Playwright)
 # ==============================================================================

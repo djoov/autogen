@@ -9,7 +9,7 @@ from config import (
 print(f"\n[DEBUG] Ollama URL: {OLLAMA_API_URL}")
 print(f"[DEBUG] ChromaDB Path: {CHROMA_DB_PATH.absolute()}")
 
-# --- CHROMADB SETUP ---
+#CHROMADB SETUP
 print("[INFO] Loading embedding model...")
 embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
     model_name=EMBEDDING_MODEL
@@ -23,7 +23,7 @@ collection = chroma_client.get_or_create_collection(
 
 print(f"[INFO] Database berisi {collection.count()} dokumen.\n")
 
-# --- RAG FUNCTIONS ---
+#RAG FUNCTIONS
 
 def simpan(teks: str) -> str:
     """Simpan teks ke database."""

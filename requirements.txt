@@ -4,3 +4,4 @@ requests
 chromadb
 sentence-transformers
 pypdf
+neo4j

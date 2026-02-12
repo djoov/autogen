@@ -1,11 +1,12 @@
 """
-Bot Super - Hybrid Agent dengan RAG + SilverBullet + PDF Integration
-=====================================================================
+Bot Super - Hybrid Agent dengan RAG + SilverBullet + PDF + Knowledge Graph
+===================================================================
 Menggabungkan:
 1. ChromaDB untuk semantic search (memori vektor)
-2. SilverBullet untuk catatan visual (Markdown files)
-3. Playwright untuk browser automation (opsional)
-4. PDF Document Loading untuk knowledge base
+2. Neo4j untuk knowledge graph (entitas & relasi)
+3. SilverBullet untuk catatan visual (Markdown files)
+4. Playwright untuk browser automation (opsional)
+5. PDF Document Loading untuk knowledge base
 """
 import chromadb
 from chromadb.utils import embedding_functions
@@ -18,11 +19,11 @@ from config import (
     SILVERBULLET_URL, BROWSER_HEADLESS, BROWSER_SLOW_MO, CODING_OUTPUT_DIR
 )
 
-# Path untuk documents
+#Path untuk documents
 DOCS_PATH = Path("documents")
 DOCS_PATH.mkdir(exist_ok=True)
 
-# Path untuk notes SilverBullet (sesuai docker-compose volume)
+#Path untuk notes SilverBullet (sesuai docker-compose volume)
 NOTES_PATH = Path("notes")
 NOTES_PATH.mkdir(exist_ok=True)
 
@@ -30,7 +31,18 @@ print(f"\n[DEBUG] Ollama URL: {OLLAMA_API_URL}")
 print(f"[DEBUG] ChromaDB Path: {CHROMA_DB_PATH.absolute()}")
 print(f"[DEBUG] Notes Path: {NOTES_PATH.absolute()}")
 
-# --- CHROMADB SETUP ---
+#Neo4j Knowledge Graph (optional - will connect on demand)
+try:
+    from neo4j_graph import (
+        get_graph, extract_entities_with_llm, save_entities_to_graph
+    )
+    NEO4J_AVAILABLE = True
+    print("[INFO] Neo4j module loaded.")
+except ImportError as e:
+    NEO4J_AVAILABLE = False
+    print(f"[WARN] Neo4j module not available: {e}")
+
+#CHROMADB SETUP
 print("[INFO] Loading embedding model...")
 embedding_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
     model_name=EMBEDDING_MODEL
@@ -42,7 +54,66 @@ collection = chroma_client.get_or_create_collection(
     embedding_function=embedding_fn
 )
 
-print(f"[INFO] Database berisi {collection.count()} dokumen.\n")
+print(f"[INFO] Database berisi {collection.count()} dokumen.")
+
+# --- MODEL WARM-UP ---
+
+def warmup_model(max_retries: int = 3) -> bool:
+    """Pre-load Ollama model dengan mengirim request sederhana."""
+    import time
+    
+    print(f"\n[INFO] Warming up model '{OLLAMA_MODEL}'...")
+    print(f"[INFO] Koneksi ke: {OLLAMA_API_URL}")
+    
+    for attempt in range(1, max_retries + 1):
+        try:
+            print(f"[WARMUP] Attempt {attempt}/{max_retries}...", end=" ", flush=True)
+            
+            response = requests.post(
+                f"{OLLAMA_API_URL}/api/generate",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": "Hi",
+                    "stream": False
+                },
+                timeout=120 
+            )
+            
+            if response.status_code == 200:
+                print("OK ✓")
+                print(f"[INFO] Model '{OLLAMA_MODEL}' siap digunakan!\n")
+                return True
+            elif response.status_code == 404:
+                print(f"GAGAL")
+                print(f"[ERROR] Model '{OLLAMA_MODEL}' tidak ditemukan!")
+                print(f"[ERROR] Jalankan: ollama pull {OLLAMA_MODEL}")
+                return False
+            else:
+                print(f"Error {response.status_code}")
+                if attempt < max_retries:
+                    print(f"[WARMUP] Retry dalam 5 detik...")
+                    time.sleep(5)
+                    
+        except requests.exceptions.ConnectionError:
+            print("Connection Error")
+            print(f"[ERROR] Tidak bisa konek ke Ollama di {OLLAMA_API_URL}")
+            print(f"[ERROR] Pastikan Ollama berjalan: ollama serve")
+            if attempt < max_retries:
+                print(f"[WARMUP] Retry dalam 5 detik...")
+                time.sleep(5)
+                
+        except requests.exceptions.Timeout:
+            print("Timeout")
+            if attempt < max_retries:
+                print(f"[WARMUP] Model mungkin masih loading, retry...")
+                time.sleep(3)
+    
+    print(f"\n[WARN] Gagal warm-up model setelah {max_retries} percobaan.")
+    print(f"[WARN] Bot tetap berjalan, tapi LLM mungkin lambat saat pertama kali.\n")
+    return False
+
+# Warm-up saat startup
+_model_ready = warmup_model()
 
 # --- FUNGSI UTILITAS ---
 
@@ -65,7 +136,7 @@ def chunk_text(text: str, chunk_size: int = 500, overlap: int = 50) -> list:
     
     return chunks if chunks else [text]
 
-# --- FUNGSI PDF ---
+#FUNGSI PDF
 
 def load_pdf(filepath: str) -> dict:
     """Ekstrak teks dari PDF."""
@@ -97,7 +168,7 @@ def load_pdf(filepath: str) -> dict:
         return {"error": f"Gagal membaca PDF: {e}"}
 
 def simpan_pdf_ke_memory(filepath: str) -> str:
-    """Load PDF dan simpan semua chunks ke ChromaDB."""
+    """Load PDF dan simpan semua chunks ke ChromaDB + ekstrak entitas ke Neo4j."""
     result = load_pdf(filepath)
     
     if "error" in result:
@@ -107,17 +178,17 @@ def simpan_pdf_ke_memory(filepath: str) -> str:
     if not text:
         return "[ERROR] PDF kosong atau tidak bisa dibaca teksnya."
     
-    # Pecah jadi chunks
+    #Pecah jadi chunks
     chunks = chunk_text(text, chunk_size=400, overlap=50)
     
     saved_count = 0
     for i, chunk in enumerate(chunks):
         doc_id = f"pdf_{result['filename']}_{i+1}"
         
-        # Cek apakah sudah ada
+        #Cek apakah sudah ada
         existing = collection.get(ids=[doc_id])
         if existing['ids']:
-            continue  # Skip jika sudah ada
+            continue  #Skip jika sudah ada
         
         collection.add(
             documents=[chunk],
@@ -133,7 +204,31 @@ def simpan_pdf_ke_memory(filepath: str) -> str:
         saved_count += 1
     
     print(f">>> [PDF] Loaded: {result['filename']} ({result['pages']} pages, {len(chunks)} chunks)")
-    return f"PDF '{result['filename']}' berhasil dimuat!\n- {result['pages']} halaman\n- {len(chunks)} chunks disimpan ke memori\n- {saved_count} chunks baru (sisanya sudah ada)"
+    
+    #Auto-extract entities ke Neo4j
+    entity_result = ""
+    if NEO4J_AVAILABLE:
+        try:
+            print(f">>> [NEO4J] Extracting entities from PDF...")
+            graph = get_graph()
+            if graph.connect():
+                # Ekstrak entitas dari summary text (max 3000 chars)
+                extracted = extract_entities_with_llm(text[:3000])
+                entity_result = save_entities_to_graph(graph, extracted)
+                print(f">>> [NEO4J] {entity_result}")
+        except Exception as e:
+            print(f">>> [NEO4J] Entity extraction failed: {e}")
+            entity_result = f"(Entity extraction gagal: {e})"
+    
+    output = f"PDF '{result['filename']}' berhasil dimuat!\\n"
+    output += f"- {result['pages']} halaman\\n"
+    output += f"- {len(chunks)} chunks disimpan ke ChromaDB\\n"
+    output += f"- {saved_count} chunks baru (sisanya sudah ada)"
+    
+    if entity_result:
+        output += f"\\n- Knowledge Graph: {entity_result}"
+    
+    return output
 
 def list_pdf_files() -> str:
     """List semua PDF di folder documents/."""
@@ -379,6 +474,171 @@ def import_json(filepath: str) -> str:
     except Exception as e:
         return f"[ERROR] Gagal impor JSON: {e}"
 
+def export_all(folder_name: str = None) -> str:
+    """Export ChromaDB (ZIP) + Neo4j Graph (JSON) dalam satu folder."""
+    import shutil
+    import zipfile
+    import json
+    
+    if not folder_name:
+        folder_name = f"backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    export_folder = CODING_OUTPUT_DIR / folder_name
+    export_folder.mkdir(exist_ok=True)
+    
+    results = []
+    
+    # 1. Export ChromaDB ke ZIP
+    try:
+        chroma_zip = export_folder / "chromadb.zip"
+        with zipfile.ZipFile(chroma_zip, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file in CHROMA_DB_PATH.rglob('*'):
+                if file.is_file():
+                    zipf.write(file, file.relative_to(CHROMA_DB_PATH))
+        results.append(f"✓ ChromaDB: {chroma_zip.name} ({collection.count()} docs)")
+    except Exception as e:
+        results.append(f"✗ ChromaDB: {e}")
+    
+    # 2. Export Neo4j Graph ke JSON
+    if NEO4J_AVAILABLE:
+        try:
+            graph = get_graph()
+            if graph.connect():
+                neo4j_json = export_folder / "neo4j_graph.json"
+                
+                # Get all nodes
+                nodes = graph.run_query("MATCH (n) RETURN labels(n) as labels, properties(n) as props")
+                
+                # Get all relationships
+                rels = graph.run_query("""
+                    MATCH (a)-[r]->(b) 
+                    RETURN a.name as from_name, labels(a)[0] as from_type,
+                           type(r) as rel_type, 
+                           b.name as to_name, labels(b)[0] as to_type
+                """)
+                
+                export_data = {
+                    "exported_at": datetime.now().isoformat(),
+                    "nodes": nodes,
+                    "relationships": rels
+                }
+                
+                with open(neo4j_json, 'w', encoding='utf-8') as f:
+                    json.dump(export_data, f, ensure_ascii=False, indent=2, default=str)
+                
+                results.append(f"✓ Neo4j: {neo4j_json.name} ({len(nodes)} nodes, {len(rels)} rels)")
+            else:
+                results.append("✗ Neo4j: Tidak bisa konek")
+        except Exception as e:
+            results.append(f"✗ Neo4j: {e}")
+    else:
+        results.append("- Neo4j: Module tidak tersedia")
+    
+    output = f"[OK] Export All selesai!\n"
+    output += f"Folder: {export_folder}\n\n"
+    output += "Hasil:\n" + "\n".join(results)
+    
+    return output
+
+def import_all(folder_path: str) -> str:
+    """Import ChromaDB + Neo4j dari folder backup."""
+    import shutil
+    import zipfile
+    
+    folder = Path(folder_path)
+    if not folder.exists():
+        folder = CODING_OUTPUT_DIR / folder_path
+        if not folder.exists():
+            # List available backup folders
+            backups = [d for d in CODING_OUTPUT_DIR.iterdir() if d.is_dir() and d.name.startswith('backup_')]
+            if backups:
+                listing = "\n".join([f"- {b.name}" for b in backups])
+                return f"[ERROR] Folder tidak ditemukan: {folder_path}\n\nBackup tersedia:\n{listing}"
+            return f"[ERROR] Folder tidak ditemukan: {folder_path}"
+    
+    results = []
+    global collection, chroma_client
+    
+    # 1. Import ChromaDB dari ZIP
+    chroma_zip = folder / "chromadb.zip"
+    if chroma_zip.exists():
+        try:
+            # Backup existing
+            backup_path = CODING_OUTPUT_DIR / "chroma_db_backup_temp"
+            if CHROMA_DB_PATH.exists():
+                if backup_path.exists():
+                    shutil.rmtree(backup_path)
+                shutil.copytree(CHROMA_DB_PATH, backup_path)
+            
+            # Clear and extract
+            if CHROMA_DB_PATH.exists():
+                shutil.rmtree(CHROMA_DB_PATH)
+            CHROMA_DB_PATH.mkdir(exist_ok=True)
+            
+            with zipfile.ZipFile(chroma_zip, 'r') as zip_ref:
+                zip_ref.extractall(CHROMA_DB_PATH)
+            
+            # Reload ChromaDB
+            chroma_client = chromadb.PersistentClient(path=str(CHROMA_DB_PATH))
+            collection = chroma_client.get_or_create_collection(
+                name="agent_memory",
+                embedding_function=embedding_fn
+            )
+            
+            results.append(f"✓ ChromaDB: {collection.count()} dokumen diimpor")
+        except Exception as e:
+            results.append(f"✗ ChromaDB: {e}")
+    else:
+        results.append("- ChromaDB: chromadb.zip tidak ditemukan")
+    
+    # 2. Import Neo4j dari JSON
+    neo4j_json = folder / "neo4j_graph.json"
+    if neo4j_json.exists() and NEO4J_AVAILABLE:
+        try:
+            graph = get_graph()
+            if graph.connect():
+                with open(neo4j_json, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                nodes_imported = 0
+                rels_imported = 0
+                
+                # Import nodes
+                for node in data.get('nodes', []):
+                    labels = node.get('labels', ['Entity'])
+                    props = node.get('props', {})
+                    if labels and props.get('name'):
+                        graph.save_entity(labels[0], props['name'], props)
+                        nodes_imported += 1
+                
+                # Import relationships
+                for rel in data.get('relationships', []):
+                    from_name = rel.get('from_name', '')
+                    from_type = rel.get('from_type', 'Entity')
+                    rel_type = rel.get('rel_type', 'RELATED_TO')
+                    to_name = rel.get('to_name', '')
+                    to_type = rel.get('to_type', 'Entity')
+                    
+                    if from_name and to_name:
+                        graph.save_relationship(from_name, from_type, rel_type, to_name, to_type)
+                        rels_imported += 1
+                
+                results.append(f"✓ Neo4j: {nodes_imported} nodes, {rels_imported} rels diimpor")
+            else:
+                results.append("✗ Neo4j: Tidak bisa konek")
+        except Exception as e:
+            results.append(f"✗ Neo4j: {e}")
+    elif not NEO4J_AVAILABLE:
+        results.append("- Neo4j: Module tidak tersedia")
+    else:
+        results.append("- Neo4j: neo4j_graph.json tidak ditemukan")
+    
+    output = f"[OK] Import All selesai!\n"
+    output += f"Dari: {folder}\n\n"
+    output += "Hasil:\n" + "\n".join(results)
+    
+    return output
+
 def lihat_semua_memory() -> str:
     """List semua dokumen di ChromaDB."""
     if collection.count() == 0:
@@ -522,6 +782,30 @@ def detect_intent(user_input: str) -> str:
     """Deteksi intent user."""
     lower = user_input.lower()
     
+    # Intent: SHOW GRAPH (knowledge graph summary)
+    if any(kw in lower for kw in ["show graph", "tampilkan graph", "lihat graph", "graph summary"]):
+        return "SHOW_GRAPH"
+    
+    # Intent: QUERY GRAPH
+    if any(kw in lower for kw in ["query graph", "cari graph", "relasi"]):
+        return "QUERY_GRAPH"
+    
+    # Intent: EXPORT GRAPH
+    if any(kw in lower for kw in ["export graph", "ekspor graph"]):
+        return "EXPORT_GRAPH"
+    
+    # Intent: IMPORT GRAPH
+    if any(kw in lower for kw in ["import graph", "impor graph"]):
+        return "IMPORT_GRAPH"
+    
+    # Intent: EXPORT ALL (ChromaDB + Neo4j)
+    if any(kw in lower for kw in ["export all", "ekspor semua", "backup all", "backup semua"]):
+        return "EXPORT_ALL"
+    
+    # Intent: IMPORT ALL
+    if any(kw in lower for kw in ["import all", "impor semua", "restore all"]):
+        return "IMPORT_ALL"
+    
     # Intent: EXPORT JSON
     if any(kw in lower for kw in ["export json", "ekspor json"]):
         return "EXPORT_JSON"
@@ -582,7 +866,106 @@ def process_input(user_input: str) -> str:
     intent = detect_intent(user_input)
     print(f">>> [INTENT] {intent}")
     
-    if intent == "EXPORT_JSON":
+    # === KNOWLEDGE GRAPH COMMANDS ===
+    
+    if intent == "SHOW_GRAPH":
+        if not NEO4J_AVAILABLE:
+            return "[ERROR] Neo4j module tidak tersedia. Install neo4j: pip install neo4j"
+        try:
+            graph = get_graph()
+            if not graph.connect():
+                return "[ERROR] Tidak bisa konek ke Neo4j. Pastikan Neo4j berjalan (docker-compose up neo4j)"
+            return graph.get_graph_summary()
+        except Exception as e:
+            return f"[ERROR] Graph: {e}"
+    
+    elif intent == "QUERY_GRAPH":
+        if not NEO4J_AVAILABLE:
+            return "[ERROR] Neo4j module tidak tersedia."
+        
+        cleaned = user_input
+        for kw in ["query graph", "cari graph", "relasi"]:
+            cleaned = cleaned.lower().replace(kw, "").strip()
+        
+        if not cleaned:
+            return "Format: 'query graph [nama entitas]'\nContoh: 'query graph OpenAI'"
+        
+        try:
+            graph = get_graph()
+            if not graph.connect():
+                return "[ERROR] Tidak bisa konek ke Neo4j."
+            return graph.query_relationships(cleaned)
+        except Exception as e:
+            return f"[ERROR] Graph query: {e}"
+    
+    elif intent == "EXPORT_GRAPH":
+        if not NEO4J_AVAILABLE:
+            return "[ERROR] Neo4j module tidak tersedia."
+        
+        cleaned = user_input
+        for kw in ["export graph", "ekspor graph"]:
+            cleaned = cleaned.lower().replace(kw, "").strip()
+        
+        filename = cleaned if cleaned else None
+        
+        try:
+            graph = get_graph()
+            if not graph.connect():
+                return "[ERROR] Tidak bisa konek ke Neo4j."
+            return graph.export_graph(filename)
+        except Exception as e:
+            return f"[ERROR] Export graph: {e}"
+    
+    elif intent == "IMPORT_GRAPH":
+        if not NEO4J_AVAILABLE:
+            return "[ERROR] Neo4j module tidak tersedia."
+        
+        cleaned = user_input
+        for kw in ["import graph", "impor graph"]:
+            cleaned = cleaned.lower().replace(kw, "").strip()
+        
+        if not cleaned:
+            # List available graph JSON files
+            jsons = [f for f in CODING_OUTPUT_DIR.glob("*.json") if "graph" in f.name.lower()]
+            if jsons:
+                listing = "\n".join([f"- {j.name}" for j in jsons])
+                return f"Format: 'import graph [file.json]'\n\nFile tersedia:\n{listing}"
+            return "Format: 'import graph [file.json]'\nTidak ada file graph JSON."
+        
+        try:
+            graph = get_graph()
+            if not graph.connect():
+                return "[ERROR] Tidak bisa konek ke Neo4j."
+            return graph.import_graph(cleaned)
+        except Exception as e:
+            return f"[ERROR] Import graph: {e}"
+    
+    elif intent == "EXPORT_ALL":
+        cleaned = user_input
+        for kw in ["export all", "ekspor semua", "backup all", "backup semua"]:
+            cleaned = cleaned.lower().replace(kw, "").strip()
+        
+        folder_name = cleaned if cleaned else None
+        return export_all(folder_name)
+    
+    elif intent == "IMPORT_ALL":
+        cleaned = user_input
+        for kw in ["import all", "impor semua", "restore all"]:
+            cleaned = cleaned.lower().replace(kw, "").strip()
+        
+        if not cleaned:
+            # List backup folders
+            backups = [d for d in CODING_OUTPUT_DIR.iterdir() if d.is_dir() and d.name.startswith('backup_')]
+            if backups:
+                listing = "\n".join([f"- {b.name}" for b in backups])
+                return f"Format: 'import all [folder_backup]'\n\nBackup tersedia:\n{listing}"
+            return "Format: 'import all [folder_backup]'\nTidak ada folder backup."
+        
+        return import_all(cleaned)
+    
+    # === CHROMADB EXPORT/IMPORT ===
+    
+    elif intent == "EXPORT_JSON":
         # Ekspor database ke JSON
         cleaned = user_input
         for kw in ["export json", "ekspor json"]:
@@ -762,25 +1145,48 @@ def process_input(user_input: str) -> str:
 
 def main():
     print("=" * 60)
-    print("BOT SUPER - RAG + SilverBullet + PDF Hybrid")
+    print("BOT SUPER - RAG + Knowledge Graph + SilverBullet + PDF")
     print("=" * 60)
     print(f"ChromaDB: {collection.count()} dokumen")
     print(f"Notes: {len(list(NOTES_PATH.glob('*.md')))} files")
     print(f"PDFs: {len(list(DOCS_PATH.glob('*.pdf')))} files")
-    print("\nPerintah:")
-    print("  - 'Load pdf [file.pdf]'   -> Muat PDF ke memori")
+    
+    # Check Neo4j connection
+    if NEO4J_AVAILABLE:
+        try:
+            graph = get_graph()
+            if graph.connect():
+                print(f"Neo4j: Connected ✓")
+            else:
+                print("Neo4j: Not connected (run: docker-compose up neo4j)")
+        except:
+            print("Neo4j: Error connecting")
+    else:
+        print("Neo4j: Module not available")
+    
+    print("\n=== PERINTAH ===")
+    print("\n📄 PDF & Memori:")
+    print("  - 'Load pdf [file]'       -> Muat PDF + ekstrak entitas")
     print("  - 'List pdf'              -> Daftar file PDF")
     print("  - 'Tanya pdf [?]'         -> Tanya HANYA dari PDF")
-    print("  - 'Tanya visual [?]'      -> Tanya & ketik di browser")
-    print("  - 'Export json [nama]'    -> Ekspor ke JSON (portable)")
-    print("  - 'Import json [file]'    -> Impor dari JSON")
-    print("  - 'Export db [nama]'      -> Ekspor ke ZIP (cepat)")
-    print("  - 'Import db [file.zip]'  -> Impor dari ZIP")
-    print("  - 'Reset database'        -> Hapus semua memori")
     print("  - 'Tampilkan semua'       -> List memori & notes")
-    print("  - [pertanyaan]            -> Tanya dengan konteks")
-    print("  - 'exit' untuk keluar\n")
-    print("  - [pertanyaan]            -> Tanya dengan konteks")
+    
+    print("\n🔗 Knowledge Graph:")
+    print("  - 'Show graph'            -> Lihat ringkasan graph")
+    print("  - 'Query graph [entity]'  -> Cari relasi entitas")
+    print("  - 'Export graph'          -> Ekspor graph ke JSON")
+    print("  - 'Import graph [file]'   -> Impor graph dari JSON")
+    
+    print("\n💾 Backup & Migrasi:")
+    print("  - 'Export all'            -> Backup ChromaDB + Neo4j")
+    print("  - 'Import all [folder]'   -> Restore dari backup")
+    print("  - 'Export db'             -> Ekspor ChromaDB saja (ZIP)")
+    print("  - 'Import db [file]'      -> Impor ChromaDB saja")
+    
+    print("\n🖥️ SilverBullet:")
+    print("  - 'Tanya visual [?]'      -> Tanya & ketik di browser")
+    
+    print("\n  - [pertanyaan]            -> Tanya dengan konteks")
     print("  - 'exit' untuk keluar\n")
     
     while True:
