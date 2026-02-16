@@ -5,3 +5,5 @@ chromadb
 sentence-transformers
 pypdf
 neo4j
+streamlit
+streamlit-agraph

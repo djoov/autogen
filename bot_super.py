@@ -1117,10 +1117,34 @@ def process_input(user_input: str) -> str:
         notes_list = lihat_notes()
         return f"{memory_list}\n\n{notes_list}"
     
-    else:  # ASK
-        # Cari konteks dari memory
+    else:  # ASK - Hybrid Search (ChromaDB + Neo4j)
+        # 1. Cari konteks dari ChromaDB (semantic search)
         context = cari_memory(user_input)
-        answer = tanya_llm(user_input, context)
+        
+        # 2. Cari konteks dari Neo4j (knowledge graph)
+        graph_context = ""
+        if NEO4J_AVAILABLE:
+            try:
+                graph = get_graph()
+                if graph.connect():
+                    graph_context = graph.search_graph(user_input)
+                    if graph_context:
+                        print(f">>> [HYBRID] Graph context found!")
+            except Exception as e:
+                print(f">>> [HYBRID] Graph search error: {e}")
+        
+        # 3. Gabungkan konteks
+        full_context = ""
+        if context:
+            full_context += context
+        if graph_context:
+            full_context += "\n\n" + graph_context
+        
+        if full_context:
+            print(f">>> [HYBRID] ChromaDB: {'✓' if context else '✗'} | Neo4j: {'✓' if graph_context else '✗'}")
+        
+        # 4. Tanya LLM dengan konteks gabungan
+        answer = tanya_llm(user_input, full_context)
         
         # Jika jawaban berasal dari PDF, simpan ke SilverBullet
         if context and "KONTEKS DARI MEMORY" in context:
@@ -1134,7 +1158,10 @@ def process_input(user_input: str) -> str:
             if pdf_results['ids'][0]:  # Ada hasil dari PDF
                 # Generate judul dari pertanyaan
                 judul = "Hasil_" + slugify(user_input[:30])
-                isi = f"**Pertanyaan:** {user_input}\n\n**Jawaban:**\n{answer}\n\n**Sumber:** PDF Documents"
+                sumber = "PDF"
+                if graph_context:
+                    sumber += " + Knowledge Graph"
+                isi = f"**Pertanyaan:** {user_input}\n\n**Jawaban:**\n{answer}\n\n**Sumber:** {sumber}"
                 
                 simpan_ke_silverbullet(judul, isi)
                 return f"{answer}\n\n---\n*Jawaban juga disimpan di SilverBullet: {judul}.md*"

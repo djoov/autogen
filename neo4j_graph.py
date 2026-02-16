@@ -1,9 +1,3 @@
-"""
-neo4j_graph.py - Knowledge Graph Module dengan Neo4j
-=====================================================
-Module untuk menyimpan dan query knowledge graph (entitas & relasi).
-Terintegrasi dengan LLM untuk ekstraksi entitas otomatis.
-"""
 from neo4j import GraphDatabase
 import json
 import re
@@ -16,7 +10,7 @@ from config import (
     OLLAMA_API_URL, OLLAMA_MODEL, CODING_OUTPUT_DIR
 )
 
-# --- NEO4J CONNECTION ---
+#NEO4J CONNECTION
 
 class Neo4jGraph:
     """Wrapper untuk operasi Neo4j."""
@@ -66,6 +60,14 @@ class Neo4jGraph:
     
     def save_entity(self, entity_type: str, name: str, properties: dict = None) -> bool:
         """Simpan entitas ke graph."""
+        # Sanitize label: replace spaces, remove special chars
+        entity_type = entity_type.strip().replace(' ', '_').replace('-', '_')
+        entity_type = ''.join(c for c in entity_type if c.isalnum() or c == '_')
+        if not entity_type:
+            entity_type = "Entity"
+        if not name or not name.strip():
+            return False
+        
         props = properties or {}
         props['name'] = name
         props['created_at'] = datetime.now().isoformat()
@@ -81,6 +83,24 @@ class Neo4jGraph:
                          rel_type: str, to_name: str, to_type: str,
                          properties: dict = None) -> bool:
         """Simpan relasi antar entitas."""
+        # Sanitize labels & rel type
+        from_type = from_type.strip().replace(' ', '_').replace('-', '_')
+        from_type = ''.join(c for c in from_type if c.isalnum() or c == '_')
+        to_type = to_type.strip().replace(' ', '_').replace('-', '_')
+        to_type = ''.join(c for c in to_type if c.isalnum() or c == '_')
+        rel_type = rel_type.strip().replace(' ', '_').replace('-', '_').upper()
+        rel_type = ''.join(c for c in rel_type if c.isalnum() or c == '_')
+        
+        # Validate - skip if empty
+        if not from_type:
+            from_type = "Entity"
+        if not to_type:
+            to_type = "Entity"
+        if not rel_type:
+            rel_type = "RELATED_TO"
+        if not from_name or not from_name.strip() or not to_name or not to_name.strip():
+            return False
+        
         props = properties or {}
         
         query = f"""
@@ -189,7 +209,7 @@ class Neo4jGraph:
     # --- EXPORT/IMPORT ---
     
     def export_graph(self, filename: str = None) -> str:
-        """Export graph ke JSON."""
+        """Export graph ke JSON (portable, name-based)."""
         if not filename:
             filename = f"knowledge_graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         
@@ -198,22 +218,22 @@ class Neo4jGraph:
         
         export_path = CODING_OUTPUT_DIR / filename
         
-        # Get all nodes
-        nodes_query = """
-        MATCH (n)
-        RETURN id(n) as id, labels(n) as labels, properties(n) as props
-        """
-        nodes = self.run_query(nodes_query)
+        # Get all nodes (name-based, bukan ID-based agar portable)
+        nodes = self.run_query(
+            "MATCH (n) RETURN labels(n) as labels, properties(n) as props"
+        )
         
-        # Get all relationships
-        rels_query = """
-        MATCH (a)-[r]->(b)
-        RETURN id(a) as from_id, type(r) as type, id(b) as to_id, properties(r) as props
-        """
-        rels = self.run_query(rels_query)
+        # Get all relationships (name-based)
+        rels = self.run_query("""
+            MATCH (a)-[r]->(b) 
+            RETURN a.name as from_name, labels(a)[0] as from_type,
+                   type(r) as rel_type, properties(r) as rel_props,
+                   b.name as to_name, labels(b)[0] as to_type
+        """)
         
         export_data = {
             "exported_at": datetime.now().isoformat(),
+            "format_version": "2.0",
             "nodes": nodes,
             "relationships": rels
         }
@@ -228,7 +248,7 @@ class Neo4jGraph:
             return f"[ERROR] Gagal ekspor graph: {e}"
     
     def import_graph(self, filepath: str) -> str:
-        """Import graph dari JSON."""
+        """Import graph dari JSON (name-based, portable)."""
         json_path = Path(filepath)
         if not json_path.exists():
             json_path = CODING_OUTPUT_DIR / filepath
@@ -241,6 +261,7 @@ class Neo4jGraph:
             
             nodes_imported = 0
             rels_imported = 0
+            errors = 0
             
             # Import nodes
             for node in data.get('nodes', []):
@@ -248,13 +269,35 @@ class Neo4jGraph:
                 props = node.get('props', {})
                 
                 if labels and props.get('name'):
-                    self.save_entity(labels[0], props['name'], props)
-                    nodes_imported += 1
+                    try:
+                        self.save_entity(labels[0], props['name'], props)
+                        nodes_imported += 1
+                    except:
+                        errors += 1
             
-            # Import relationships (simplified - by name matching)
-            # Note: This is a simplified approach, real import would need ID mapping
+            # Import relationships (name-based matching)
+            for rel in data.get('relationships', []):
+                from_name = rel.get('from_name', '')
+                from_type = rel.get('from_type', 'Entity')
+                rel_type = rel.get('rel_type', 'RELATED_TO')
+                to_name = rel.get('to_name', '')
+                to_type = rel.get('to_type', 'Entity')
+                rel_props = rel.get('rel_props', {})
+                
+                if from_name and to_name and rel_type:
+                    try:
+                        self.save_relationship(
+                            from_name, from_type, rel_type,
+                            to_name, to_type, rel_props
+                        )
+                        rels_imported += 1
+                    except:
+                        errors += 1
             
-            return f"[OK] Graph berhasil diimpor!\nNodes: {nodes_imported}"
+            result = f"[OK] Graph berhasil diimpor!\nNodes: {nodes_imported}\nRelationships: {rels_imported}"
+            if errors:
+                result += f"\nErrors: {errors}"
+            return result
         except Exception as e:
             return f"[ERROR] Gagal impor graph: {e}"
     
