@@ -149,6 +149,7 @@ def check_ollama(url):
         return False
 
 
+
 def check_neo4j():
     """Cek apakah Neo4j berjalan."""
     try:
@@ -157,6 +158,26 @@ def check_neo4j():
         return graph.connect()
     except:
         return False
+
+
+def warmup_ollama(url, model):
+    """Pemanasan model (load ke RAM)."""
+    import requests
+    try:
+        # Cek apakah model sudah loaded
+        r = requests.post(f"{url}/api/show", json={"name": model}, timeout=3)
+        if r.status_code == 200:
+            # Kirim empty request untuk trigger load
+            requests.post(
+                f"{url}/api/generate",
+                json={"model": model, "prompt": "hi", "stream": False},
+                timeout=5
+            )
+            return True
+    except:
+        pass
+    return False
+
 
 
 def tanya_llm_web(prompt, context, bot):
@@ -373,6 +394,12 @@ with st.sidebar:
     with col1:
         if ollama_ok:
             st.markdown("🟢 **Ollama**")
+            # Auto-warmup di background jika belum
+            if "model_warmed_up" not in st.session_state:
+                with st.spinner("🔥 Warming up..."):
+                    if warmup_ollama(bot["ollama_url"], bot["ollama_model"]):
+                        st.session_state.model_warmed_up = True
+                        st.toast(f"Model {bot['ollama_model']} siap!", icon="🔥")
         else:
             st.markdown("🔴 **Ollama**")
     
