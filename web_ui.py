@@ -191,7 +191,7 @@ def tanya_llm_web(prompt, context, bot):
         response = requests.post(
             f"{bot['ollama_url']}/api/generate",
             json={"model": bot['ollama_model'], "prompt": full_prompt, "stream": False},
-            timeout=180
+            timeout=300  # Timeout 5 menit
         )
         if response.status_code == 200:
             return response.json().get("response", "[No response]")
@@ -675,7 +675,7 @@ with tab_chat:
         
         # Generate response
         with st.chat_message("assistant", avatar="🤖"):
-            with st.spinner("Mencari & berpikir..."):
+            with st.spinner(f"⏳ Sedang berpikir... (Model: {bot['ollama_model']})"):
                 # Hybrid search
                 context, sources = hybrid_search(prompt, bot)
                 
